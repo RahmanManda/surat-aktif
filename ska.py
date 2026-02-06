@@ -7,18 +7,13 @@ from io import BytesIO
 # ================= KONFIGURASI =================
 st.set_page_config(page_title="Layanan SK Aktif", page_icon="📝", layout="centered")
 
-# --- VERSI AMAN (BACA DARI CLOUD SECRETS) ---
-try:
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"]
-except:
-    st.warning("⚠️ Konfigurasi Token belum dipasang di Streamlit Cloud.")
-    st.stop()
-# -------------------------------------------
+# --- KITA HARDCODE DULU (Pastikan Token Benar) ---
+TELEGRAM_TOKEN = "8543332667:AAGD95v990MLCGiUYz1Xv7YSgqX8oU-bMYY"
+GROUP_ADMIN_ID = "-5035907453" 
+# -----------------------------------------------
 
 TEMPLATE_SKA = "template_ska.docx"
 
-# CSS Tampilan Mewah
 st.markdown("""
     <style>
     .stApp { background-color: #1a2a3a; color: #ffffff; }
@@ -26,7 +21,7 @@ st.markdown("""
         background-color: #2c3e50 !important; color: white !important;
         border: 1px solid #d4af37 !important; border-radius: 8px !important;
     }
-    h1, h2, h3 { color: #d4af37 !important; }
+    h1, h2 { color: #d4af37 !important; }
     .stButton>button {
         background: linear-gradient(45deg, #d4af37, #b8860b) !important;
         color: #1a2a3a !important; font-weight: bold !important; width: 100%;
@@ -57,22 +52,26 @@ def get_periode_iain():
 
 TA, SEM, BLN_ROM, THN, TGL_LENGKAP = get_periode_iain()
 
-def kirim_ke_admin(file_bytes, filename, caption):
+def kirim_ke_admin_simple(file_bytes, filename, caption):
+    """Versi Sederhana Tanpa HTML (Lebih Aman)"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     files = {'document': (filename, file_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
-    data = {'chat_id': GROUP_ADMIN_ID, 'caption': caption, 'parse_mode': 'HTML'}
+    
+    # Hapus parse_mode='HTML' untuk menghindari error format
+    data = {'chat_id': GROUP_ADMIN_ID, 'caption': caption} 
     
     try:
         resp = requests.post(url, data=data, files=files)
         if resp.status_code != 200:
             st.error("⛔ TELEGRAM MENOLAK PESAN!")
+            st.error(f"Pesan Error Asli: {resp.text}") # Baca ini jika masih error
             return False
         return True
     except Exception as e:
         st.error(f"⛔ Gagal Koneksi: {e}")
         return False
 
-# ================= UI APLIKASI =================
+# ================= UI =================
 st.title("📝 Permohonan SK Aktif Kuliah")
 st.info(f"Semester {SEM} Tahun Akademik {TA}")
 
@@ -103,23 +102,27 @@ with st.form("form_ska"):
             st.error("Nama dan WA wajib diisi!")
         else:
             with st.spinner("Mengirim ke Admin..."):
-                doc = DocxTemplate(TEMPLATE_SKA)
-                context = {
-                    'nama': nama.upper(), 'nim': nim,
-                    'tempat_lahir': tmp_lahir, 'tanggal_lahir': tgl_lahir,
-                    'program_studi': prodi, 'semester': semester_mhs,
-                    'alamat': alamat, 'tahun_akademik': TA,
-                    'bulan': BLN_ROM, 'tahun': THN,
-                    'tanggal_pembuatan': TGL_LENGKAP
-                }
-                doc.render(context)
-                buffer = BytesIO()
-                doc.save(buffer)
-                buffer.seek(0)
-                
-                link_wa = f"https://wa.me/{format_wa(wa)}?text=Assalamu'alaikum,%20berikut%20Surat%20Keterangan%20Aktif%20Anda."
-                pesan = f"SK AKTIF BARU:\n{nama}\n<a href='{link_wa}'>KIRIM WA</a>"
-                
-                if kirim_ke_admin(buffer.getvalue(), f"SKA_{nim}.docx", pesan):
-                    st.balloons()
-                    st.success("✅ BERHASIL! Admin akan memproses dan mengirim ke WA Anda.")
+                try:
+                    doc = DocxTemplate(TEMPLATE_SKA)
+                    context = {
+                        'nama': nama.upper(), 'nim': nim,
+                        'tempat_lahir': tmp_lahir, 'tanggal_lahir': tgl_lahir,
+                        'program_studi': prodi, 'semester': semester_mhs,
+                        'alamat': alamat, 'tahun_akademik': TA,
+                        'bulan': BLN_ROM, 'tahun': THN,
+                        'tanggal_pembuatan': TGL_LENGKAP
+                    }
+                    doc.render(context)
+                    buffer = BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    
+                    # Link WA Murni (Tanpa HTML)
+                    link_wa = f"https://wa.me/{format_wa(wa)}"
+                    pesan = f"SK AKTIF BARU:\nNama: {nama}\nProdi: {prodi}\n\nLink WA Mahasiswa:\n{link_wa}"
+                    
+                    if kirim_ke_admin_simple(buffer.getvalue(), f"SKA_{nim}.docx", pesan):
+                        st.balloons()
+                        st.success("✅ BERHASIL TERKIRIM!")
+                except Exception as e:
+                    st.error(f"Error di Dokumen: {e}")
