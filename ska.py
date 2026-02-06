@@ -4,21 +4,20 @@ from datetime import datetime
 from docxtpl import DocxTemplate
 from io import BytesIO
 
-# ================= KONFIGURASI =================
-st.set_page_config(page_title="Layanan SK Aktif", page_icon="📝", layout="centered")
+# ================= KONFIGURASI HALAMAN =================
+st.set_page_config(page_title="SKA FTIK Digital", page_icon="📝", layout="centered")
 
-# --- KODE AMAN: MENGAMBIL DARI SECRETS ---
-# Token tidak lagi ditulis di sini, tapi diambil dari pengaturan server
+# Mengambil Secrets dari Streamlit Cloud
 try:
     TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"]
 except Exception as e:
-    st.warning("⚠️ Konfigurasi Token belum dipasang di Secrets Streamlit Cloud.")
+    st.error("⚠️ Konfigurasi Secrets (TELEGRAM_TOKEN / GROUP_ADMIN_ID) belum lengkap!")
     st.stop()
-# -----------------------------------------
 
 TEMPLATE_SKA = "template_ska.docx"
 
+# CSS Dark Theme Premium (Anti-Silau)
 st.markdown("""
     <style>
     .stApp { background-color: #1a2a3a; color: #ffffff; }
@@ -26,108 +25,155 @@ st.markdown("""
         background-color: #2c3e50 !important; color: white !important;
         border: 1px solid #d4af37 !important; border-radius: 8px !important;
     }
-    h1, h2 { color: #d4af37 !important; }
+    h1, h2, h3 { color: #d4af37 !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
     .stButton>button {
         background: linear-gradient(45deg, #d4af37, #b8860b) !important;
         color: #1a2a3a !important; font-weight: bold !important; width: 100%;
-        height: 50px; border-radius: 10px;
+        height: 50px; border-radius: 10px; border: none;
     }
+    .stFileUploader section { background-color: #2c3e50 !important; border: 1px dashed #d4af37 !important; }
     </style>
     """, unsafe_allow_html=True)
 
 # ================= FUNGSI HELPER =================
+
 def format_wa(nomor):
+    """Konversi nomor 08xx ke 628xx"""
     n = nomor.strip().replace("-", "").replace(" ", "").replace("+", "")
     if n.startswith("0"): return "62" + n[1:]
     return n
 
 def get_periode_iain():
+    """Logika Akademik IAIN Ternate"""
     now = datetime.now()
     bln = now.month
     thn = now.year
+    # Gasal: Agt-Jan | Genap: Feb-Jul
     if bln >= 8 or bln == 1:
         sem_txt = "Ganjil"
         ta = f"{thn}/{thn+1}" if bln >= 8 else f"{thn-1}/{thn}"
     else:
         sem_txt = "Genap"
         ta = f"{thn-1}/{thn}"
+    
     romawi = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]
     indo_bln = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
     return ta, sem_txt, romawi[bln-1], thn, f"{now.day} {indo_bln[bln-1]} {thn}"
 
-TA, SEM, BLN_ROM, THN, TGL_LENGKAP = get_periode_iain()
+TA, SEM_AKTIF, BULAN_ROM, TAHUN_NOW, TGL_LENGKAP = get_periode_iain()
 
-def kirim_ke_admin_simple(file_bytes, filename, caption):
-    """Versi Sederhana Tanpa HTML (Lebih Aman)"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    files = {'document': (filename, file_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
+def kirim_paket_ke_admin(doc_bytes, doc_name, caption, ktm_file, bayar_file):
+    """Mengirim Dokumen SKA dan Berkas Validasi ke Telegram"""
+    token = TELEGRAM_TOKEN.strip()
     
-    # Hapus parse_mode='HTML' agar lebih stabil
-    data = {'chat_id': GROUP_ADMIN_ID, 'caption': caption} 
+    # 1. Kirim Dokumen Word SKA
+    url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
+    requests.post(url_doc, data={'chat_id': GROUP_ADMIN_ID, 'caption': caption, 'parse_mode': 'HTML'}, 
+                  files={'document': (doc_name, doc_bytes)})
     
-    try:
-        resp = requests.post(url, data=data, files=files)
-        if resp.status_code != 200:
-            st.error("⛔ TELEGRAM MENOLAK PESAN!")
-            st.error(f"Pesan Error Asli: {resp.text}") 
-            return False
-        return True
-    except Exception as e:
-        st.error(f"⛔ Gagal Koneksi: {e}")
-        return False
+    # 2. Kirim Bukti Validasi (KTM)
+    if ktm_file:
+        requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", 
+                      data={'chat_id': GROUP_ADMIN_ID, 'caption': f"🪪 KTM: {doc_name}"}, 
+                      files={'photo': ktm_file.getvalue()})
+    
+    # 3. Kirim Bukti Validasi (Pembayaran)
+    if bayar_file:
+        requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", 
+                      data={'chat_id': GROUP_ADMIN_ID, 'caption': f"💰 Bukti Bayar: {doc_name}"}, 
+                      files={'photo': bayar_file.getvalue()})
+    return True
 
-# ================= UI =================
+# ================= UI APLIKASI =================
 st.title("📝 Permohonan SK Aktif Kuliah")
-st.info(f"Semester {SEM} Tahun Akademik {TA}")
+st.subheader(f"Semester {SEM_AKTIF} TA {TA}")
 
-with st.form("form_ska"):
+with st.form("form_ska_lengkap"):
+    st.info("🎓 **Identitas Mahasiswa**")
     c1, c2 = st.columns(2)
-    nama = c1.text_input("Nama Lengkap")
+    nama = c1.text_input("Nama Lengkap (Sesuai KTM)")
     nim = c2.text_input("NIM")
     
     c3, c4 = st.columns(2)
     tmp_lahir = c3.text_input("Tempat Lahir")
-    tgl_lahir = c4.text_input("Tanggal Lahir")
+    tgl_lahir = c4.text_input("Tanggal Lahir (Cth: 10 Agustus 2002)")
     
     prodi = st.selectbox("Program Studi", [
-        "Pendidikan Agama Islam", "Manajemen Pendidikan Islam", 
+        "Pendidikan Agama Islam", "Manajemen Pendidikan Islam", "Bimbingan Konseling dan Pendidikan Islam",
         "Pendidikan Bahasa Arab", "Pendidikan Guru Madrasah Ibtidaiyah",
-        "Pendidikan Islam Anak Usia Dini", "Tadris Matematika", "Tadris Biologi", "Bimbingan Konseling dan Pendidikan Islam"
+        "Pendidikan Islam Anak Usia Dini", "Tadris Matematika", "Tadris Biologi"
     ])
     
     c5, c6 = st.columns(2)
-    semester_mhs = c5.text_input("Semester (Romawi)")
-    wa = c6.text_input("Nomor WhatsApp")
-    alamat = st.text_area("Alamat")
+    semester_angka = c5.text_input("Semester (Angka Romawi, Misal: VII)")
+    wa = c6.text_input("Nomor WhatsApp Aktif")
     
-    tombol = st.form_submit_button("🚀 KIRIM DATA")
+    alamat = st.text_area("Alamat Lengkap di Ternate")
+    
+    st.markdown("---")
+    st.info("📂 **Validasi Berkas (Wajib)**")
+    col_u1, col_u2 = st.columns(2)
+    up_ktm = col_u1.file_uploader("Upload Foto KTM", type=['jpg', 'jpeg', 'png'])
+    up_bayar = col_u2.file_uploader("Upload Bukti Bayar Semester Berjalan", type=['jpg', 'jpeg', 'png'])
 
-    if tombol:
-        if not nama or not wa:
-            st.error("Nama dan WA wajib diisi!")
+    st.warning("⚠️ Admin akan memverifikasi berkas Anda sebelum menerbitkan surat.")
+    
+    submit = st.form_submit_button("🚀 AJUKAN SEKARANG")
+
+    if submit:
+        if not all([nama, nim, wa, up_ktm, up_bayar]):
+            st.error("❌ GAGAL: Semua kolom identitas dan berkas wajib diisi!")
         else:
-            with st.spinner("Mengirim ke Admin..."):
+            with st.spinner("Sedang memproses dokumen dan mengupload berkas..."):
                 try:
+                    # 1. Olah Template Word
                     doc = DocxTemplate(TEMPLATE_SKA)
                     context = {
-                        'nama': nama.upper(), 'nim': nim,
-                        'tempat_lahir': tmp_lahir, 'tanggal_lahir': tgl_lahir,
-                        'program_studi': prodi, 'semester': semester_mhs,
-                        'alamat': alamat, 'tahun_akademik': TA,
-                        'bulan': BLN_ROM, 'tahun': THN,
+                        'nama': nama.upper(),
+                        'nim': nim,
+                        'tempat_lahir': tmp_lahir,
+                        'tanggal_lahir': tgl_lahir,
+                        'program_studi': prodi,
+                        'semester': semester_angka,
+                        'alamat': alamat,
+                        'tahun_akademik': TA,
+                        'bulan': BULAN_ROM,
+                        'tahun': TAHUN_NOW,
                         'tanggal_pembuatan': TGL_LENGKAP
                     }
                     doc.render(context)
+                    
+                    # Simpan Docx ke Buffer
                     buffer = BytesIO()
                     doc.save(buffer)
                     buffer.seek(0)
                     
-                    # Link WA Murni
-                    link_wa = f"https://wa.me/{format_wa(wa)}"
-                    pesan = f"SK AKTIF BARU:\nNama: {nama}\nProdi: {prodi}\n\nLink WA Mahasiswa:\n{link_wa}"
+                    # 2. Penamaan File (SKA_NIM_NamaDepan)
+                    nama_depan = nama.strip().split()[0]
+                    nama_clean = "".join(x for x in nama_depan if x.isalnum())
+                    nama_file_final = f"SKA_{nim}_{nama_clean}.docx"
                     
-                    if kirim_ke_admin_simple(buffer.getvalue(), f"SKA_{nim}.docx", pesan):
+                    # 3. Siapkan Link WA Admin
+                    link_wa = f"https://wa.me/{format_wa(wa)}?text=Assalamu'alaikum,%20berikut%20Surat%20Keterangan%20Aktif%20Kuliah%20Anda."
+                    
+                    # 4. Caption Notifikasi
+                    pesan_admin = (
+                        f"<b>🔔 PENGAJUAN SKA BARU</b>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>{nama.upper()}</b>\n"
+                        f"🆔 NIM: <code>{nim}</code>\n"
+                        f"📚 {prodi}\n\n"
+                        f"👉 <a href='{link_wa}'><b>KLIK UNTUK KIRIM BALIK WA</b></a>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"<i>Mohon cek lampiran foto KTM dan Bukti Bayar di bawah sebelum memproses.</i>"
+                    )
+                    
+                    # 5. Eksekusi Pengiriman
+                    if kirim_paket_ke_admin(buffer.getvalue(), nama_file_final, pesan_admin, up_ktm, up_bayar):
+                        st.success("✅ BERHASIL! Permohonan dan berkas validasi Anda telah dikirim ke Admin.")
                         st.balloons()
-                        st.success("✅ BERHASIL TERKIRIM!")
+                    else:
+                        st.error("Gagal terhubung ke server Telegram.")
+                        
                 except Exception as e:
-                    st.error(f"Error di Dokumen: {e}")
+                    st.error(f"Terjadi kesalahan teknis: {e}")
