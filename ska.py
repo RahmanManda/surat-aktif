@@ -7,10 +7,15 @@ from io import BytesIO
 # ================= KONFIGURASI =================
 st.set_page_config(page_title="Layanan SK Aktif", page_icon="📝", layout="centered")
 
-# --- KITA HARDCODE DULU (Pastikan Token Benar) ---
-TELEGRAM_TOKEN = "8543332667:AAGD95v990MLCGiUYz1Xv7YSgqX8oU-bMYY"
-GROUP_ADMIN_ID = "-5035907453" 
-# -----------------------------------------------
+# --- KODE AMAN: MENGAMBIL DARI SECRETS ---
+# Token tidak lagi ditulis di sini, tapi diambil dari pengaturan server
+try:
+    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+    GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"]
+except Exception as e:
+    st.warning("⚠️ Konfigurasi Token belum dipasang di Secrets Streamlit Cloud.")
+    st.stop()
+# -----------------------------------------
 
 TEMPLATE_SKA = "template_ska.docx"
 
@@ -57,14 +62,14 @@ def kirim_ke_admin_simple(file_bytes, filename, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     files = {'document': (filename, file_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
     
-    # Hapus parse_mode='HTML' untuk menghindari error format
+    # Hapus parse_mode='HTML' agar lebih stabil
     data = {'chat_id': GROUP_ADMIN_ID, 'caption': caption} 
     
     try:
         resp = requests.post(url, data=data, files=files)
         if resp.status_code != 200:
             st.error("⛔ TELEGRAM MENOLAK PESAN!")
-            st.error(f"Pesan Error Asli: {resp.text}") # Baca ini jika masih error
+            st.error(f"Pesan Error Asli: {resp.text}") 
             return False
         return True
     except Exception as e:
@@ -117,7 +122,7 @@ with st.form("form_ska"):
                     doc.save(buffer)
                     buffer.seek(0)
                     
-                    # Link WA Murni (Tanpa HTML)
+                    # Link WA Murni
                     link_wa = f"https://wa.me/{format_wa(wa)}"
                     pesan = f"SK AKTIF BARU:\nNama: {nama}\nProdi: {prodi}\n\nLink WA Mahasiswa:\n{link_wa}"
                     
