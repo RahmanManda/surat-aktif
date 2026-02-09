@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import html 
+import urllib.parse
 from datetime import datetime
 from docxtpl import DocxTemplate
 from io import BytesIO
@@ -10,7 +11,6 @@ st.set_page_config(page_title="SKA FTIK Digital", page_icon="📝", layout="cent
 
 # Mengambil Secrets dari Streamlit Cloud
 try:
-    # Pastikan di Secrets tidak ada spasi tambahan
     TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"].strip()
     GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"].strip()
 except Exception as e:
@@ -19,7 +19,7 @@ except Exception as e:
 
 TEMPLATE_SKA = "template_ska.docx"
 
-# CSS Dark Theme Premium (Anti-Silau)
+# CSS Dark Theme Premium
 st.markdown("""
     <style>
     .stApp { background-color: #1a2a3a; color: #ffffff; }
@@ -40,9 +40,13 @@ st.markdown("""
 # ================= FUNGSI HELPER =================
 
 def format_wa(nomor):
-    """Konversi nomor 08xx ke 628xx"""
-    n = nomor.strip().replace("-", "").replace(" ", "").replace("+", "")
-    if n.startswith("0"): return "62" + n[1:]
+    """Membersihkan nomor WA dan mengubah 08 ke 628"""
+    # Ambil hanya angka
+    n = "".join(filter(str.isdigit, nomor))
+    if n.startswith("0"):
+        return "62" + n[1:]
+    if n.startswith("8"):
+        return "62" + n
     return n
 
 def get_periode_iain():
@@ -72,36 +76,30 @@ def kirim_paket_ke_admin(doc_bytes, doc_name, caption, ktm_file, bayar_file):
     url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
     files_doc = {'document': (doc_name, doc_bytes)}
     
-    # Coba kirim dengan HTML
+    # Coba kirim dengan format HTML
     resp_doc = requests.post(
         url_doc, 
         data={'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}, 
         files=files_doc
     )
     
-    # JIKA GAGAL (Biasanya karena error parse HTML), kirim ulang tanpa format HTML agar file tetap sampai
+    # FALLBACK: Jika HTML error (Status != 200), kirim ulang tanpa format HTML agar file tetap terkirim
     if resp_doc.status_code != 200:
-        # Bersihkan caption dari tag HTML untuk kiriman cadangan
-        clean_caption = caption.replace("<b>","").replace("</b>","").replace("<code>","").replace("</code>","").replace("<a href='","").replace("'>"," ").replace("</a>","")
+        # Bersihkan caption dari tag HTML secara kasar untuk pesan cadangan
+        clean_caption = caption.replace("<b>","").replace("</b>","").replace("<code>","").replace("</code>","").replace('<a href="',"").replace('">'," ").replace("</a>","")
         requests.post(
             url_doc, 
-            data={'chat_id': chat_id, 'caption': f"⚠️ PENGAJUAN (Format Error):\n{clean_caption}"}, 
+            data={'chat_id': chat_id, 'caption': f"⚠️ PENGAJUAN (Format Teks Error):\n{clean_caption}"}, 
             files=files_doc
         )
 
-    # 2. Kirim Bukti Validasi (KTM)
-    if ktm_file:
-        url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
-        requests.post(url_photo, 
-                      data={'chat_id': chat_id, 'caption': f"🪪 KTM: {doc_name}"}, 
-                      files={'photo': ktm_file.getvalue()})
-    
-    # 3. Kirim Bukti Validasi (Pembayaran)
-    if bayar_file:
-        url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
-        requests.post(url_photo, 
-                      data={'chat_id': chat_id, 'caption': f"💰 Bukti Bayar: {doc_name}"}, 
-                      files={'photo': bayar_file.getvalue()})
+    # 2. Kirim Bukti Validasi (KTM & Pembayaran) menggunakan looping agar ringkas
+    url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
+    for file, label in [(ktm_file, "🪪 KTM"), (bayar_file, "💰 Bukti Bayar")]:
+        if file:
+            requests.post(url_photo, 
+                          data={'chat_id': chat_id, 'caption': f"{label}: {doc_name}"}, 
+                          files={'photo': file.getvalue()})
     return True
 
 # ================= UI APLIKASI =================
@@ -137,14 +135,13 @@ with st.form("form_ska_lengkap"):
     up_bayar = col_u2.file_uploader("Upload Bukti Bayar Semester Berjalan", type=['jpg', 'jpeg', 'png'])
 
     st.warning("⚠️ Admin akan memverifikasi berkas Anda sebelum menerbitkan surat.")
-    
     submit = st.form_submit_button("🚀 AJUKAN SEKARANG")
 
     if submit:
         if not all([nama, nim, wa, up_ktm, up_bayar]):
-            st.error("❌ GAGAL: Semua kolom identitas dan berkas wajib diisi!")
+            st.error("❌ GAGAL: Semua identitas dan berkas validasi wajib diisi!")
         else:
-            with st.spinner("Sedang memproses dokumen dan mengupload berkas..."):
+            with st.spinner("Sedang memproses dokumen..."):
                 try:
                     # 1. Olah Template Word
                     doc = DocxTemplate(TEMPLATE_SKA)
@@ -167,36 +164,37 @@ with st.form("form_ska_lengkap"):
                     doc.save(buffer)
                     doc_bytes = buffer.getvalue()
                     
-                    # 2. Penamaan File (Hanya Nama Depan sesuai instruksi)
+                    # 2. Penamaan File (Nama Depan Mahasiswa)
                     nama_depan = nama.strip().split()[0]
                     nama_clean = "".join(x for x in nama_depan if x.isalnum())
                     nama_file_final = f"SKA_{nim}_{nama_clean}.docx"
                     
-                    # 3. Siapkan Link WA
-                    link_wa = f"https://wa.me/{format_wa(wa)}?text=Assalamu'alaikum,%20berikut%20Surat%20Keterangan%20Aktif%20Kuliah%20Anda."
+                    # 3. Siapkan Link WA dengan URL Encoding (Agar karakter ' tidak merusak HTML)
+                    text_wa = urllib.parse.quote("Assalamu'alaikum, berikut Surat Keterangan Aktif Kuliah Anda.")
+                    link_wa = f"https://wa.me/{format_wa(wa)}?text={text_wa}"
                     
-                    # 4. Proteksi karakter khusus untuk HTML Telegram
+                    # 4. Escape Karakter Khusus untuk HTML Telegram
                     nama_safe = html.escape(nama.upper())
                     prodi_safe = html.escape(prodi)
 
-                    # 5. Caption Notifikasi
+                    # 5. Caption Notifikasi (Gunakan double quotes pada href)
                     pesan_admin = (
                         f"<b>🔔 PENGAJUAN SKA BARU</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
                         f"👤 <b>{nama_safe}</b>\n"
                         f"🆔 NIM: <code>{nim}</code>\n"
                         f"📚 {prodi_safe}\n\n"
-                        f"👉 <a href='{link_wa}'><b>KLIK UNTUK KIRIM BALIK WA</b></a>\n"
+                        f"👉 <a href=\"{link_wa}\"><b>KLIK UNTUK KIRIM BALIK WA</b></a>\n"
                         f"━━━━━━━━━━━━━━━\n"
                         f"<i>Cek lampiran KTM & Bukti Bayar di bawah.</i>"
                     )
                     
                     # 6. Eksekusi Pengiriman
                     if kirim_paket_ke_admin(doc_bytes, nama_file_final, pesan_admin, up_ktm, up_bayar):
-                        st.success("✅ BERHASIL! Permohonan dan berkas validasi Anda telah dikirim ke Admin.")
+                        st.success("✅ BERHASIL! Permohonan telah dikirim ke Admin.")
                         st.balloons()
                     else:
-                        st.error("Terjadi masalah saat mengirim ke Telegram.")
+                        st.error("Gagal mengirim data ke Telegram.")
                         
                 except Exception as e:
                     st.error(f"Terjadi kesalahan teknis: {e}")
