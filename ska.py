@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import html 
 from datetime import datetime
 from docxtpl import DocxTemplate
 from io import BytesIO
@@ -9,8 +10,9 @@ st.set_page_config(page_title="SKA FTIK Digital", page_icon="📝", layout="cent
 
 # Mengambil Secrets dari Streamlit Cloud
 try:
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"]
+    # Pastikan di Secrets tidak ada spasi tambahan
+    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"].strip()
+    GROUP_ADMIN_ID = st.secrets["GROUP_ADMIN_ID"].strip()
 except Exception as e:
     st.error("⚠️ Konfigurasi Secrets (TELEGRAM_TOKEN / GROUP_ADMIN_ID) belum lengkap!")
     st.stop()
@@ -48,7 +50,6 @@ def get_periode_iain():
     now = datetime.now()
     bln = now.month
     thn = now.year
-    # Gasal: Agt-Jan | Genap: Feb-Jul
     if bln >= 8 or bln == 1:
         sem_txt = "Ganjil"
         ta = f"{thn}/{thn+1}" if bln >= 8 else f"{thn-1}/{thn}"
@@ -64,23 +65,42 @@ TA, SEM_AKTIF, BULAN_ROM, TAHUN_NOW, TGL_LENGKAP = get_periode_iain()
 
 def kirim_paket_ke_admin(doc_bytes, doc_name, caption, ktm_file, bayar_file):
     """Mengirim Dokumen SKA dan Berkas Validasi ke Telegram"""
-    token = TELEGRAM_TOKEN.strip()
+    token = TELEGRAM_TOKEN
+    chat_id = GROUP_ADMIN_ID
     
     # 1. Kirim Dokumen Word SKA
     url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
-    requests.post(url_doc, data={'chat_id': GROUP_ADMIN_ID, 'caption': caption, 'parse_mode': 'HTML'}, 
-                  files={'document': (doc_name, doc_bytes)})
+    files_doc = {'document': (doc_name, doc_bytes)}
     
+    # Coba kirim dengan HTML
+    resp_doc = requests.post(
+        url_doc, 
+        data={'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}, 
+        files=files_doc
+    )
+    
+    # JIKA GAGAL (Biasanya karena error parse HTML), kirim ulang tanpa format HTML agar file tetap sampai
+    if resp_doc.status_code != 200:
+        # Bersihkan caption dari tag HTML untuk kiriman cadangan
+        clean_caption = caption.replace("<b>","").replace("</b>","").replace("<code>","").replace("</code>","").replace("<a href='","").replace("'>"," ").replace("</a>","")
+        requests.post(
+            url_doc, 
+            data={'chat_id': chat_id, 'caption': f"⚠️ PENGAJUAN (Format Error):\n{clean_caption}"}, 
+            files=files_doc
+        )
+
     # 2. Kirim Bukti Validasi (KTM)
     if ktm_file:
-        requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", 
-                      data={'chat_id': GROUP_ADMIN_ID, 'caption': f"🪪 KTM: {doc_name}"}, 
+        url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
+        requests.post(url_photo, 
+                      data={'chat_id': chat_id, 'caption': f"🪪 KTM: {doc_name}"}, 
                       files={'photo': ktm_file.getvalue()})
     
     # 3. Kirim Bukti Validasi (Pembayaran)
     if bayar_file:
-        requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", 
-                      data={'chat_id': GROUP_ADMIN_ID, 'caption': f"💰 Bukti Bayar: {doc_name}"}, 
+        url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
+        requests.post(url_photo, 
+                      data={'chat_id': chat_id, 'caption': f"💰 Bukti Bayar: {doc_name}"}, 
                       files={'photo': bayar_file.getvalue()})
     return True
 
@@ -143,37 +163,40 @@ with st.form("form_ska_lengkap"):
                     }
                     doc.render(context)
                     
-                    # Simpan Docx ke Buffer
                     buffer = BytesIO()
                     doc.save(buffer)
-                    buffer.seek(0)
+                    doc_bytes = buffer.getvalue()
                     
-                    # 2. Penamaan File (SKA_NIM_NamaDepan)
+                    # 2. Penamaan File (Hanya Nama Depan sesuai instruksi)
                     nama_depan = nama.strip().split()[0]
                     nama_clean = "".join(x for x in nama_depan if x.isalnum())
                     nama_file_final = f"SKA_{nim}_{nama_clean}.docx"
                     
-                    # 3. Siapkan Link WA Admin
+                    # 3. Siapkan Link WA
                     link_wa = f"https://wa.me/{format_wa(wa)}?text=Assalamu'alaikum,%20berikut%20Surat%20Keterangan%20Aktif%20Kuliah%20Anda."
                     
-                    # 4. Caption Notifikasi
+                    # 4. Proteksi karakter khusus untuk HTML Telegram
+                    nama_safe = html.escape(nama.upper())
+                    prodi_safe = html.escape(prodi)
+
+                    # 5. Caption Notifikasi
                     pesan_admin = (
                         f"<b>🔔 PENGAJUAN SKA BARU</b>\n"
                         f"━━━━━━━━━━━━━━━\n"
-                        f"👤 <b>{nama.upper()}</b>\n"
+                        f"👤 <b>{nama_safe}</b>\n"
                         f"🆔 NIM: <code>{nim}</code>\n"
-                        f"📚 {prodi}\n\n"
+                        f"📚 {prodi_safe}\n\n"
                         f"👉 <a href='{link_wa}'><b>KLIK UNTUK KIRIM BALIK WA</b></a>\n"
                         f"━━━━━━━━━━━━━━━\n"
-                        f"<i>Mohon cek lampiran foto KTM dan Bukti Bayar di bawah sebelum memproses.</i>"
+                        f"<i>Cek lampiran KTM & Bukti Bayar di bawah.</i>"
                     )
                     
-                    # 5. Eksekusi Pengiriman
-                    if kirim_paket_ke_admin(buffer.getvalue(), nama_file_final, pesan_admin, up_ktm, up_bayar):
+                    # 6. Eksekusi Pengiriman
+                    if kirim_paket_ke_admin(doc_bytes, nama_file_final, pesan_admin, up_ktm, up_bayar):
                         st.success("✅ BERHASIL! Permohonan dan berkas validasi Anda telah dikirim ke Admin.")
                         st.balloons()
                     else:
-                        st.error("Gagal terhubung ke server Telegram.")
+                        st.error("Terjadi masalah saat mengirim ke Telegram.")
                         
                 except Exception as e:
                     st.error(f"Terjadi kesalahan teknis: {e}")
